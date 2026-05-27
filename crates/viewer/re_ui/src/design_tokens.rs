@@ -524,11 +524,22 @@ impl DesignTokens {
                 "../data/Inter-Medium.otf"
             ))),
         );
+        font_definitions.font_data.insert(
+            "NotoSansCJKsc-Regular".into(),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+                "../data/NotoSansCJKsc-Regular.otf"
+            ))),
+        );
         font_definitions
             .families
             .get_mut(&egui::FontFamily::Proportional)
             .unwrap()
             .insert(0, "Inter-Medium".into());
+        font_definitions
+            .families
+            .get_mut(&egui::FontFamily::Proportional)
+            .unwrap()
+            .push("NotoSansCJKsc-Regular".into());
         ctx.set_fonts(font_definitions);
     }
 

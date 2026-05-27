@@ -22,22 +22,27 @@ impl App {
         ui: &mut egui::Ui,
     ) {
         let icon_tint = ui.tokens().strong_fg_color;
-        let image = re_ui::icons::RERUN_WORDMARK
+        let logo = re_ui::icons::RERUN_LOGO
             .as_image()
-            .max_height(12.0)
-            .tint(icon_tint)
-            .alt_text("Menu");
+            .fit_to_exact_size(egui::Vec2::splat(18.0))
+            .corner_radius(4.0)
+            .alt_text("Delta");
+        let title = egui::RichText::new("Delta").strong().color(icon_tint);
 
-        MenuButton::new((image, icons::DROPDOWN_ARROW.as_image().tint(icon_tint)))
-            .config(MenuConfig::new().style(menu_style()))
-            .ui(ui, |ui| {
-                ui.set_max_height(ui.content_rect().height());
-                ScrollArea::vertical()
-                    .max_height(ui.content_rect().height() - 16.0)
-                    .show(ui, |ui| {
-                        self.rerun_menu_ui(ui, render_state, _store_context);
-                    });
-            });
+        MenuButton::new((
+            logo,
+            title,
+            icons::DROPDOWN_ARROW.as_image().tint(icon_tint),
+        ))
+        .config(MenuConfig::new().style(menu_style()))
+        .ui(ui, |ui| {
+            ui.set_max_height(ui.content_rect().height());
+            ScrollArea::vertical()
+                .max_height(ui.content_rect().height() - 16.0)
+                .show(ui, |ui| {
+                    self.rerun_menu_ui(ui, render_state, _store_context);
+                });
+        });
     }
 
     pub fn navigation_buttons(&self, ui: &mut egui::Ui) {
@@ -257,26 +262,27 @@ pub fn about_rerun_ui(
 
     let logo_size = 68.0;
 
-    ui.horizontal(|ui|{
+    ui.horizontal(|ui| {
         ui.add(
             re_ui::icons::RERUN_LOGO
                 .as_image()
                 .fit_to_exact_size(egui::Vec2::splat(logo_size))
                 .corner_radius(4.0)
-                .alt_text("Rerun"),
+                .alt_text("Delta"),
         );
 
-        ui.vertical(|ui|{
+        ui.vertical(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+            ui.heading("Delta");
             ui.label(
-                "Rerun is a toolchain for robotics and physical AI that makes it easy to log, query, visualize, and train on multi-rate, multimodal data.",
+                "Delta is a robotics data viewer built on Rerun for DOHC RGB streams, skeleton overlays, teleoperation views, and motion telemetry.",
             );
 
             ui.add_space(4.0);
 
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                ui.label("Learn more at ");
+                ui.label("Powered by ");
                 ui.hyperlink_to("rerun.io", "https://rerun.io/");
                 ui.label(".");
             });

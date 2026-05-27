@@ -9331,6 +9331,7 @@ dependencies = [
  "egui",
  "insta",
  "itertools 0.14.0",
+ "re_data_source",
  "re_data_ui",
  "re_entity_db",
  "re_log",

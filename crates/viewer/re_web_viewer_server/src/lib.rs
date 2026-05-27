@@ -276,7 +276,7 @@ impl WebViewerServerInner {
         let path = url.split('?').next().unwrap_or(url);
 
         let (mime, bytes): (&str, &[u8]) = match path {
-            "/" | "/index.html" => ("text/html", data::index_html()),
+            "/" | "/index.html" | "/demo" | "/dashboard" => ("text/html", data::index_html()),
             "/favicon.ico" => ("image/x-icon", data::favicon()),
             "/apple-touch-icon.png" => ("image/png", data::apple_touch_icon()),
             "/sw.js" => ("text/javascript", data::sw_js()),

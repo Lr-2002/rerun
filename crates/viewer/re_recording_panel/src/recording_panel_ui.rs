@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use egui::collapsing_header::CollapsingState;
 use egui::{RichText, Widget as _};
+use re_data_source::LogDataSource;
 use re_data_ui::DataUi as _;
 use re_data_ui::item_ui::{entity_db_button_ui, table_id_button_ui};
 use re_log_channel::LogSource;
@@ -10,6 +11,7 @@ use re_redap_browser::{Command, EXAMPLES_ORIGIN, RedapServers};
 use re_ui::list_item::{LabelContent, ListItemContentButtonsExt as _};
 use re_ui::{OnResponseExt as _, UiExt as _, UiLayout, icons, list_item};
 use re_uri::dataset_hierarchy_leaf_name;
+use re_uri::external::url::Url;
 use re_viewer_context::open_url::ViewerOpenUrl;
 use re_viewer_context::{
     EditRedapServerModalCommand, Item, RecordingOrTable, RedapEntryKind, Route, SystemCommand,
@@ -26,6 +28,31 @@ use crate::data::{
 pub struct RecordingPanel {
     commands: Vec<RecordingPanelCommand>,
 }
+
+#[derive(Clone, Copy)]
+struct DohcDemoSource {
+    title: &'static str,
+    description: &'static str,
+    url: &'static str,
+}
+
+const DOHC_DEMO_SOURCES: &[DohcDemoSource] = &[
+    DohcDemoSource {
+        title: "Session 01",
+        description: "DOHC demo source 01, currently backed by the smoke recording.",
+        url: "http://localhost:8000/recordings/dohc_smoke.rrd?session=01",
+    },
+    DohcDemoSource {
+        title: "Session 02",
+        description: "DOHC demo source 02, currently backed by the smoke recording.",
+        url: "http://localhost:8000/recordings/dohc_smoke.rrd?session=02",
+    },
+    DohcDemoSource {
+        title: "Session 03",
+        description: "DOHC demo source 03, currently backed by the smoke recording.",
+        url: "http://localhost:8000/recordings/dohc_smoke.rrd?session=03",
+    },
+];
 
 impl RecordingPanel {
     pub fn send_command(&mut self, command: RecordingPanelCommand) {
@@ -63,6 +90,7 @@ impl RecordingPanel {
                 Some("Your connected servers, opened recordings and tables."),
                 |ui| {
                     add_button_ui(ctx, ui, &recording_panel_data);
+                    load_data_button_ui(ctx, ui);
                 },
             );
         });
@@ -158,6 +186,40 @@ fn add_button_ui(
     );
 }
 
+fn load_data_button_ui(ctx: &ViewerContext<'_>, ui: &mut egui::Ui) {
+    ui.add_space(6.0);
+
+    ui.add(
+        icons::DOWNLOAD
+            .as_button_with_label(ui.tokens(), "加载数据")
+            .min_size(egui::vec2(78.0, 24.0))
+            .on_hover_text("选择 DOHC 数据源并自动加载")
+            .on_menu(|ui| {
+                for source in DOHC_DEMO_SOURCES {
+                    if icons::RECORDING
+                        .as_button_with_label(ui.tokens(), source.title)
+                        .ui(ui)
+                        .on_hover_text(source.description)
+                        .clicked()
+                    {
+                        load_dohc_demo_source(ctx, *source);
+                        ui.close();
+                    }
+                }
+
+                ui.separator();
+
+                if re_ui::UICommand::OpenUrl
+                    .menu_button_ui(ui, ctx.command_sender())
+                    .on_hover_text("Open a custom RRD/RBL URL")
+                    .clicked()
+                {
+                    ui.close();
+                }
+            }),
+    );
+}
+
 fn all_sections_ui(
     ctx: &ViewerContext<'_>,
     ui: &mut egui::Ui,
@@ -171,6 +233,8 @@ fn all_sections_ui(
     if recording_panel_data.show_example_section {
         welcome_item_ui(ctx, ui, recording_panel_data);
     }
+
+    dohc_demo_sources_ui(ctx, ui);
 
     //
     // Empty placeholder
@@ -233,6 +297,61 @@ fn all_sections_ui(
     ui.add_space(8.0);
 }
 
+fn dohc_demo_sources_ui(ctx: &ViewerContext<'_>, ui: &mut egui::Ui) {
+    let id = egui::Id::new("dohc demo sources");
+    let title = list_item::LabelContent::header("DOHC demo sessions").with_icon(&icons::DATASET);
+
+    if ui
+        .list_item()
+        .header()
+        .show_hierarchical_with_children(ui, id, true, title, |ui| {
+            for source in DOHC_DEMO_SOURCES {
+                dohc_demo_source_ui(ctx, ui, *source);
+            }
+        })
+        .item_response
+        .clicked()
+    {
+        let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, true);
+        state.toggle(ui);
+        state.store(ui.ctx());
+    }
+}
+
+fn dohc_demo_source_ui(ctx: &ViewerContext<'_>, ui: &mut egui::Ui, source: DohcDemoSource) {
+    let item = Item::DataSource(LogSource::HttpStream {
+        url: source.url.to_owned(),
+        follow: false,
+    });
+    let selected = ctx.is_selected_or_loading(&item);
+    let content = LabelContent::new(source.title).with_icon(&icons::RECORDING);
+
+    let response = ui
+        .list_item()
+        .selected(selected)
+        .show_flat(ui, content)
+        .on_hover_text(source.description);
+
+    ctx.handle_select_hover_drag_interactions(&response, item.clone(), false);
+    ctx.handle_select_focus_sync(&response, item);
+
+    if response.clicked() {
+        load_dohc_demo_source(ctx, source);
+    }
+}
+
+fn load_dohc_demo_source(ctx: &ViewerContext<'_>, source: DohcDemoSource) {
+    match Url::parse(source.url) {
+        Ok(url) => ctx
+            .command_sender()
+            .send_system(SystemCommand::LoadDataSource(LogDataSource::HttpUrl {
+                url,
+                follow: false,
+            })),
+        Err(err) => re_log::error!("Failed to parse DOHC demo source {:?}: {err}", source.url),
+    }
+}
+
 fn welcome_item_ui(
     ctx: &ViewerContext<'_>,
     ui: &mut egui::Ui,
@@ -245,7 +364,7 @@ fn welcome_item_ui(
         Route::RedapServer(origin) if origin == &*EXAMPLES_ORIGIN
     );
 
-    let title = list_item::LabelContent::header("Welcome to rerun").with_icon(&icons::HOME);
+    let title = list_item::LabelContent::header("Welcome to Delta").with_icon(&icons::HOME);
 
     let list_item = ui.list_item().header().selected(selected).active(active);
 

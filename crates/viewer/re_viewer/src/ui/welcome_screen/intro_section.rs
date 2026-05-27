@@ -43,17 +43,17 @@ impl IntroItem {
             Self::DocItem {
                 title: "Send data in",
                 url: "https://rerun.io/docs/getting-started/data-in",
-                body: "Send data to Rerun from your running applications or existing files.",
+                body: "Send DOHC data into Delta from running applications or existing files.",
             },
             Self::DocItem {
                 title: "Explore data",
                 url: "https://rerun.io/docs/getting-started/configure-the-viewer",
-                body: "Familiarize yourself with the basics of using the Rerun Viewer.",
+                body: "Use Delta's Rerun-powered controls to inspect recordings and layouts.",
             },
             Self::DocItem {
                 title: "Query data out",
                 url: "https://rerun.io/docs/getting-started/data-out",
-                body: "Perform analysis and send back the results to the original recording.",
+                body: "Run analysis against recordings and send results back to the dataset.",
             },
         ];
         if login_enabled {
