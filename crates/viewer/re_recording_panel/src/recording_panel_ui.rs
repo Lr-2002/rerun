@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use egui::collapsing_header::CollapsingState;
 use egui::{RichText, Widget as _};
@@ -11,7 +11,7 @@ use re_redap_browser::{Command, EXAMPLES_ORIGIN, RedapServers};
 use re_ui::list_item::{LabelContent, ListItemContentButtonsExt as _};
 use re_ui::{OnResponseExt as _, UiExt as _, UiLayout, icons, list_item};
 use re_uri::dataset_hierarchy_leaf_name;
-use re_uri::external::url::Url;
+use re_uri::external::url::{ParseError, Url};
 use re_viewer_context::open_url::ViewerOpenUrl;
 use re_viewer_context::{
     EditRedapServerModalCommand, Item, RecordingOrTable, RedapEntryKind, Route, SystemCommand,
@@ -27,32 +27,35 @@ use crate::data::{
 #[derive(Debug, Clone, Default)]
 pub struct RecordingPanel {
     commands: Vec<RecordingPanelCommand>,
+    dohc_sessions: Arc<Mutex<DohcSessionsState>>,
 }
 
-#[derive(Clone, Copy)]
-struct DohcDemoSource {
-    title: &'static str,
-    description: &'static str,
-    url: &'static str,
+#[derive(Debug, Clone, Default)]
+enum DohcSessionsState {
+    #[default]
+    Idle,
+    Loading {
+        route: String,
+        api_url: String,
+    },
+    Loaded {
+        route: String,
+        api_url: String,
+        sessions: Vec<DohcDemoSession>,
+    },
+    Error {
+        route: String,
+        api_url: String,
+        message: String,
+    },
 }
 
-const DOHC_DEMO_SOURCES: &[DohcDemoSource] = &[
-    DohcDemoSource {
-        title: "Session 01",
-        description: "DOHC demo source 01, currently backed by the smoke recording.",
-        url: "http://localhost:8000/recordings/dohc_smoke.rrd?session=01",
-    },
-    DohcDemoSource {
-        title: "Session 02",
-        description: "DOHC demo source 02, currently backed by the smoke recording.",
-        url: "http://localhost:8000/recordings/dohc_smoke.rrd?session=02",
-    },
-    DohcDemoSource {
-        title: "Session 03",
-        description: "DOHC demo source 03, currently backed by the smoke recording.",
-        url: "http://localhost:8000/recordings/dohc_smoke.rrd?session=03",
-    },
-];
+#[derive(Debug, Clone)]
+struct DohcDemoSession {
+    id: String,
+    title: String,
+    source_urls: Vec<String>,
+}
 
 impl RecordingPanel {
     pub fn send_command(&mut self, command: RecordingPanelCommand) {
@@ -84,13 +87,27 @@ impl RecordingPanel {
             expand_parents_for_item(ui.ctx(), &recording_panel_data, item);
         }
 
+        let dohc_route = current_dohc_route();
+        let dohc_backend_base_url = current_dohc_backend_base_url();
+        let dohc_api_url = dohc_sessions_api_url(&dohc_backend_base_url, &dohc_route);
+        self.ensure_dohc_sessions(ui.ctx(), dohc_route.clone(), dohc_api_url.clone());
+        let dohc_sessions = self.dohc_sessions_state();
+
         ui.panel_content(|ui| {
             ui.panel_title_bar_with_buttons(
                 "Sources",
                 Some("Your connected servers, opened recordings and tables."),
                 |ui| {
                     add_button_ui(ctx, ui, &recording_panel_data);
-                    load_data_button_ui(ctx, ui);
+                    load_data_button_ui(
+                        ctx,
+                        ui,
+                        &dohc_route,
+                        &dohc_backend_base_url,
+                        &dohc_api_url,
+                        &dohc_sessions,
+                        &self.dohc_sessions,
+                    );
                 },
             );
         });
@@ -101,10 +118,68 @@ impl RecordingPanel {
             .show(ui, |ui| {
                 ui.panel_content(|ui| {
                     re_ui::list_item::list_item_scope(ui, "recording panel", |ui| {
-                        all_sections_ui(ctx, ui, servers, &recording_panel_data);
+                        all_sections_ui(
+                            ctx,
+                            ui,
+                            servers,
+                            &recording_panel_data,
+                            &dohc_route,
+                            &dohc_backend_base_url,
+                            &dohc_api_url,
+                            &dohc_sessions,
+                            &self.dohc_sessions,
+                        );
                     });
                 });
             });
+    }
+
+    fn dohc_sessions_state(&self) -> DohcSessionsState {
+        self.dohc_sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn ensure_dohc_sessions(&mut self, egui_ctx: &egui::Context, route: String, api_url: String) {
+        let should_fetch = {
+            let mut state = self
+                .dohc_sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            let already_targeting_url = match &*state {
+                DohcSessionsState::Loading {
+                    route: current_route,
+                    api_url: current_api_url,
+                }
+                | DohcSessionsState::Loaded {
+                    route: current_route,
+                    api_url: current_api_url,
+                    ..
+                }
+                | DohcSessionsState::Error {
+                    route: current_route,
+                    api_url: current_api_url,
+                    ..
+                } => current_route == &route && current_api_url == &api_url,
+                DohcSessionsState::Idle => false,
+            };
+
+            if already_targeting_url {
+                false
+            } else {
+                *state = DohcSessionsState::Loading {
+                    route: route.clone(),
+                    api_url: api_url.clone(),
+                };
+                true
+            }
+        };
+
+        if should_fetch {
+            fetch_dohc_sessions(egui_ctx.clone(), self.dohc_sessions.clone(), route, api_url);
+        }
     }
 }
 
@@ -186,7 +261,15 @@ fn add_button_ui(
     );
 }
 
-fn load_data_button_ui(ctx: &ViewerContext<'_>, ui: &mut egui::Ui) {
+fn load_data_button_ui(
+    ctx: &ViewerContext<'_>,
+    ui: &mut egui::Ui,
+    route: &str,
+    backend_base_url: &str,
+    api_url: &str,
+    sessions_state: &DohcSessionsState,
+    shared_state: &Arc<Mutex<DohcSessionsState>>,
+) {
     ui.add_space(6.0);
 
     ui.add(
@@ -195,17 +278,15 @@ fn load_data_button_ui(ctx: &ViewerContext<'_>, ui: &mut egui::Ui) {
             .min_size(egui::vec2(78.0, 24.0))
             .on_hover_text("选择 DOHC 数据源并自动加载")
             .on_menu(|ui| {
-                for source in DOHC_DEMO_SOURCES {
-                    if icons::RECORDING
-                        .as_button_with_label(ui.tokens(), source.title)
-                        .ui(ui)
-                        .on_hover_text(source.description)
-                        .clicked()
-                    {
-                        load_dohc_demo_source(ctx, *source);
-                        ui.close();
-                    }
-                }
+                dohc_sessions_menu_ui(
+                    ctx,
+                    ui,
+                    route,
+                    backend_base_url,
+                    api_url,
+                    sessions_state,
+                    shared_state,
+                );
 
                 ui.separator();
 
@@ -225,6 +306,11 @@ fn all_sections_ui(
     ui: &mut egui::Ui,
     servers: &RedapServers,
     recording_panel_data: &RecordingPanelData<'_>,
+    route: &str,
+    backend_base_url: &str,
+    api_url: &str,
+    sessions_state: &DohcSessionsState,
+    shared_state: &Arc<Mutex<DohcSessionsState>>,
 ) {
     //
     // Welcome and examples
@@ -234,7 +320,15 @@ fn all_sections_ui(
         welcome_item_ui(ctx, ui, recording_panel_data);
     }
 
-    dohc_demo_sources_ui(ctx, ui);
+    dohc_demo_sources_ui(
+        ctx,
+        ui,
+        route,
+        backend_base_url,
+        api_url,
+        sessions_state,
+        shared_state,
+    );
 
     //
     // Empty placeholder
@@ -297,7 +391,15 @@ fn all_sections_ui(
     ui.add_space(8.0);
 }
 
-fn dohc_demo_sources_ui(ctx: &ViewerContext<'_>, ui: &mut egui::Ui) {
+fn dohc_demo_sources_ui(
+    ctx: &ViewerContext<'_>,
+    ui: &mut egui::Ui,
+    route: &str,
+    backend_base_url: &str,
+    api_url: &str,
+    sessions_state: &DohcSessionsState,
+    shared_state: &Arc<Mutex<DohcSessionsState>>,
+) {
     let id = egui::Id::new("dohc demo sources");
     let title = list_item::LabelContent::header("DOHC demo sessions").with_icon(&icons::DATASET);
 
@@ -305,9 +407,15 @@ fn dohc_demo_sources_ui(ctx: &ViewerContext<'_>, ui: &mut egui::Ui) {
         .list_item()
         .header()
         .show_hierarchical_with_children(ui, id, true, title, |ui| {
-            for source in DOHC_DEMO_SOURCES {
-                dohc_demo_source_ui(ctx, ui, *source);
-            }
+            dohc_sessions_list_ui(
+                ctx,
+                ui,
+                route,
+                backend_base_url,
+                api_url,
+                sessions_state,
+                shared_state,
+            );
         })
         .item_response
         .clicked()
@@ -318,38 +426,441 @@ fn dohc_demo_sources_ui(ctx: &ViewerContext<'_>, ui: &mut egui::Ui) {
     }
 }
 
-fn dohc_demo_source_ui(ctx: &ViewerContext<'_>, ui: &mut egui::Ui, source: DohcDemoSource) {
+fn dohc_sessions_list_ui(
+    ctx: &ViewerContext<'_>,
+    ui: &mut egui::Ui,
+    route: &str,
+    backend_base_url: &str,
+    api_url: &str,
+    sessions_state: &DohcSessionsState,
+    shared_state: &Arc<Mutex<DohcSessionsState>>,
+) {
+    match sessions_state {
+        DohcSessionsState::Idle | DohcSessionsState::Loading { .. } => {
+            ui.list_item_flat_noninteractive(list_item::CustomContent::new(|ui, _| {
+                ui.loading_indicator("Loading DOHC sessions");
+            }))
+            .on_hover_text(api_url);
+        }
+        DohcSessionsState::Loaded { sessions, .. } => {
+            if sessions.is_empty() {
+                ui.list_item_flat_noninteractive(list_item::LabelContent::new(
+                    RichText::new("No sessions found").color(ui.visuals().weak_text_color()),
+                ))
+                .on_hover_text(api_url);
+            } else {
+                for session in sessions {
+                    dohc_demo_session_ui(ctx, ui, backend_base_url, route, session);
+                }
+            }
+        }
+        DohcSessionsState::Error { message, .. } => {
+            ui.list_item_flat_noninteractive(list_item::LabelContent::new(
+                RichText::new("Failed to load sessions").color(ui.visuals().error_fg_color),
+            ))
+            .on_hover_text(format!("{message}\n{api_url}"));
+            if icons::RESET
+                .as_button_with_label(ui.tokens(), "Retry")
+                .ui(ui)
+                .on_hover_text(api_url)
+                .clicked()
+            {
+                retry_dohc_sessions(ui.ctx(), shared_state, route.to_owned(), api_url.to_owned());
+            }
+        }
+    }
+}
+
+fn dohc_sessions_menu_ui(
+    ctx: &ViewerContext<'_>,
+    ui: &mut egui::Ui,
+    route: &str,
+    backend_base_url: &str,
+    api_url: &str,
+    sessions_state: &DohcSessionsState,
+    shared_state: &Arc<Mutex<DohcSessionsState>>,
+) {
+    match sessions_state {
+        DohcSessionsState::Idle | DohcSessionsState::Loading { .. } => {
+            ui.loading_indicator("Loading DOHC sessions");
+            ui.label(RichText::new(api_url).weak());
+        }
+        DohcSessionsState::Loaded { sessions, .. } => {
+            if sessions.is_empty() {
+                ui.label(RichText::new("No sessions found").weak());
+            } else {
+                for session in sessions {
+                    if icons::RECORDING
+                        .as_button_with_label(ui.tokens(), session.title.as_str())
+                        .ui(ui)
+                        .on_hover_text(session_hover_text(session, backend_base_url, route))
+                        .clicked()
+                    {
+                        load_dohc_demo_session(ctx, backend_base_url, route, session);
+                        ui.close();
+                    }
+                }
+            }
+        }
+        DohcSessionsState::Error { message, .. } => {
+            ui.colored_label(ui.visuals().error_fg_color, "Failed to load sessions");
+            ui.label(RichText::new(message).weak());
+            if icons::RESET
+                .as_button_with_label(ui.tokens(), "Retry")
+                .ui(ui)
+                .on_hover_text(api_url)
+                .clicked()
+            {
+                retry_dohc_sessions(ui.ctx(), shared_state, route.to_owned(), api_url.to_owned());
+            }
+        }
+    }
+}
+
+fn dohc_demo_session_ui(
+    ctx: &ViewerContext<'_>,
+    ui: &mut egui::Ui,
+    backend_base_url: &str,
+    route: &str,
+    session: &DohcDemoSession,
+) {
+    let first_source_url = session
+        .resolved_source_urls(backend_base_url, route)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| session.id.clone());
     let item = Item::DataSource(LogSource::HttpStream {
-        url: source.url.to_owned(),
+        url: first_source_url,
         follow: false,
     });
     let selected = ctx.is_selected_or_loading(&item);
-    let content = LabelContent::new(source.title).with_icon(&icons::RECORDING);
+    let content = LabelContent::new(session.title.as_str()).with_icon(&icons::RECORDING);
 
     let response = ui
         .list_item()
         .selected(selected)
         .show_flat(ui, content)
-        .on_hover_text(source.description);
+        .on_hover_text(session_hover_text(session, backend_base_url, route));
 
     ctx.handle_select_hover_drag_interactions(&response, item.clone(), false);
     ctx.handle_select_focus_sync(&response, item);
 
     if response.clicked() {
-        load_dohc_demo_source(ctx, source);
+        load_dohc_demo_session(ctx, backend_base_url, route, session);
     }
 }
 
-fn load_dohc_demo_source(ctx: &ViewerContext<'_>, source: DohcDemoSource) {
-    match Url::parse(source.url) {
-        Ok(url) => ctx
-            .command_sender()
-            .send_system(SystemCommand::LoadDataSource(LogDataSource::HttpUrl {
-                url,
-                follow: false,
-            })),
-        Err(err) => re_log::error!("Failed to parse DOHC demo source {:?}: {err}", source.url),
+fn load_dohc_demo_session(
+    ctx: &ViewerContext<'_>,
+    backend_base_url: &str,
+    route: &str,
+    session: &DohcDemoSession,
+) {
+    let source_urls = session.resolved_source_urls(backend_base_url, route);
+    if source_urls.is_empty() {
+        re_log::error!("DOHC demo session {:?} has no source URLs", session.id);
+        return;
     }
+
+    ctx.command_sender()
+        .send_system(SystemCommand::CloseAllEntries);
+
+    for source_url in source_urls {
+        match Url::parse(&source_url) {
+            Ok(url) => ctx
+                .command_sender()
+                .send_system(SystemCommand::LoadDataSource(LogDataSource::HttpUrl {
+                    url,
+                    follow: false,
+                })),
+            Err(err) => re_log::error!("Failed to parse DOHC source URL {source_url:?}: {err}"),
+        }
+    }
+}
+
+impl DohcDemoSession {
+    fn resolved_source_urls(&self, backend_base_url: &str, route: &str) -> Vec<String> {
+        self.source_urls
+            .iter()
+            .filter_map(|source_url| resolve_dohc_source_url(source_url, backend_base_url).ok())
+            .map(|mut url| {
+                {
+                    let has_session = url.query_pairs().any(|(key, _)| key == "session");
+                    let has_route = url.query_pairs().any(|(key, _)| key == "route");
+                    let mut query = url.query_pairs_mut();
+                    if !has_session {
+                        query.append_pair("session", &self.id);
+                    }
+                    if !has_route {
+                        query.append_pair("route", route);
+                    }
+                }
+                url.to_string()
+            })
+            .collect()
+    }
+}
+
+fn session_hover_text(session: &DohcDemoSession, backend_base_url: &str, route: &str) -> String {
+    let source_urls = session.resolved_source_urls(backend_base_url, route);
+    if source_urls.is_empty() {
+        format!("{}\nNo source URLs returned by the backend.", session.id)
+    } else {
+        format!("{}\n{}", session.id, source_urls.join("\n"))
+    }
+}
+
+fn retry_dohc_sessions(
+    egui_ctx: &egui::Context,
+    shared_state: &Arc<Mutex<DohcSessionsState>>,
+    route: String,
+    api_url: String,
+) {
+    {
+        let mut state = shared_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *state = DohcSessionsState::Loading {
+            route: route.clone(),
+            api_url: api_url.clone(),
+        };
+    }
+
+    fetch_dohc_sessions(egui_ctx.clone(), shared_state.clone(), route, api_url);
+}
+
+fn fetch_dohc_sessions(
+    egui_ctx: egui::Context,
+    shared_state: Arc<Mutex<DohcSessionsState>>,
+    route: String,
+    api_url: String,
+) {
+    ehttp::fetch(ehttp::Request::get(api_url.clone()), move |response| {
+        let next_state = match response {
+            Ok(response) => parse_dohc_sessions_response(&response, &route)
+                .map(|sessions| DohcSessionsState::Loaded {
+                    route: route.clone(),
+                    api_url: api_url.clone(),
+                    sessions,
+                })
+                .unwrap_or_else(|message| DohcSessionsState::Error {
+                    route: route.clone(),
+                    api_url: api_url.clone(),
+                    message,
+                }),
+            Err(message) => DohcSessionsState::Error {
+                route: route.clone(),
+                api_url: api_url.clone(),
+                message,
+            },
+        };
+
+        *shared_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = next_state;
+        egui_ctx.request_repaint();
+    });
+}
+
+fn parse_dohc_sessions_response(
+    response: &ehttp::Response,
+    route: &str,
+) -> Result<Vec<DohcDemoSession>, String> {
+    if !response.ok {
+        return Err(format!("HTTP {} {}", response.status, response.status_text));
+    }
+
+    let payload: serde_json::Value = serde_json::from_slice(&response.bytes)
+        .map_err(|err| format!("Invalid session JSON: {err}"))?;
+    let sessions = payload
+        .get("sessions")
+        .or_else(|| payload.get("sources"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Session response is missing a sessions or sources array".to_owned())?;
+    let route_blueprint_url = payload
+        .get("blueprints")
+        .and_then(|blueprints| blueprints.get(route))
+        .and_then(serde_json::Value::as_str);
+
+    sessions
+        .iter()
+        .enumerate()
+        .map(|(index, session)| parse_dohc_session(index, session, route_blueprint_url))
+        .collect()
+}
+
+fn parse_dohc_session(
+    index: usize,
+    session: &serde_json::Value,
+    route_blueprint_url: Option<&str>,
+) -> Result<DohcDemoSession, String> {
+    let id = json_string_field(session, "id").unwrap_or_else(|| format!("session-{index}"));
+    let title = json_string_field(session, "title").unwrap_or_else(|| id.clone());
+    let mut source_urls = json_string_array_field(session, "source_urls");
+
+    let recording_url = json_string_field(session, "recording_url");
+    let blueprint_url = json_string_field(session, "blueprint_url")
+        .or_else(|| route_blueprint_url.map(str::to_owned));
+
+    if source_urls.is_empty() {
+        if let Some(recording_url) = recording_url {
+            source_urls.push(recording_url);
+        }
+        if let Some(blueprint_url) = blueprint_url {
+            source_urls.push(blueprint_url);
+        }
+    } else if let Some(blueprint_url) = blueprint_url
+        && !source_urls
+            .iter()
+            .any(|source_url| source_url == &blueprint_url)
+    {
+        source_urls.push(blueprint_url);
+    }
+
+    if source_urls.is_empty() {
+        return Err(format!("Session {id:?} has no source_urls"));
+    }
+
+    Ok(DohcDemoSession {
+        id,
+        title,
+        source_urls,
+    })
+}
+
+fn json_string_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn json_string_array_field(value: &serde_json::Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn resolve_dohc_source_url(source_url: &str, backend_base_url: &str) -> Result<Url, ParseError> {
+    if source_url.starts_with("http://") || source_url.starts_with("https://") {
+        Url::parse(source_url)
+    } else {
+        Url::parse(backend_base_url)?.join(source_url)
+    }
+}
+
+fn dohc_sessions_api_url(backend_base_url: &str, route: &str) -> String {
+    match Url::parse(backend_base_url).and_then(|base_url| base_url.join("/sources")) {
+        Ok(mut url) => {
+            url.query_pairs_mut().append_pair("route", route);
+            url.to_string()
+        }
+        Err(err) => {
+            re_log::error!(
+                "Failed to build DOHC sessions API URL from {backend_base_url:?}: {err}"
+            );
+            format!("{backend_base_url}/sources?route={route}")
+        }
+    }
+}
+
+fn current_dohc_route() -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let pathname = web_sys::window()
+            .and_then(|window| window.location().pathname().ok())
+            .unwrap_or_default();
+
+        if pathname == "/dashboard" {
+            "dashboard".to_owned()
+        } else {
+            "demo".to_owned()
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var("DOHC_ROUTE").unwrap_or_else(|_| "demo".to_owned())
+    }
+}
+
+fn current_dohc_backend_base_url() -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let location = web_sys::window().map(|window| window.location());
+        if let Some(location) = &location {
+            if let Ok(search) = location.search()
+                && let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search)
+            {
+                if let Some(backend) = params.get("backend") {
+                    let backend = backend.trim_end_matches('/').to_owned();
+                    if !backend.is_empty() {
+                        return backend;
+                    }
+                }
+
+                if let Some(source_url) = params.get("url")
+                    && let Some(backend) = dohc_backend_base_url_from_source_url(&source_url)
+                {
+                    return backend;
+                }
+            }
+
+            if let Some(backend) = dohc_backend_base_url_from_web_storage() {
+                return backend;
+            }
+
+            let protocol = location.protocol().unwrap_or_else(|_| "http:".to_owned());
+            let hostname = location
+                .hostname()
+                .ok()
+                .filter(|hostname| !hostname.is_empty())
+                .unwrap_or_else(|| "127.0.0.1".to_owned());
+            return format!("{protocol}//{hostname}:8000");
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(backend) = std::env::var("DOHC_BACKEND_URL") {
+        let backend = backend.trim_end_matches('/').to_owned();
+        if !backend.is_empty() {
+            return backend;
+        }
+    }
+
+    "http://127.0.0.1:8000".to_owned()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dohc_backend_base_url_from_web_storage() -> Option<String> {
+    let storage = web_sys::window()
+        .and_then(|window| window.session_storage().ok())
+        .flatten()?;
+    let backend = storage.get_item("dohc_backend_base_url").ok().flatten()?;
+    let backend = backend.trim_end_matches('/').to_owned();
+    (!backend.is_empty()).then_some(backend)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dohc_backend_base_url_from_source_url(source_url: &str) -> Option<String> {
+    let url = Url::parse(source_url).ok()?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return None;
+    }
+
+    let host = url.host_str()?;
+    let port = url
+        .port()
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    Some(format!("{}://{host}{port}", url.scheme()))
 }
 
 fn welcome_item_ui(

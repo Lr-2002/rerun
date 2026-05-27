@@ -362,16 +362,17 @@
         wasm_with_progress();
       }
 
-      function on_wasm_loaded() {
+      async function on_wasm_loaded() {
         window.set_email = (value) => wasm_bindgen.set_email(value);
 
         console.debug("Wasm loaded. Starting app…");
 
         const query = new URLSearchParams(window.location.search);
-        const route_default_urls = source_urls_for_path(
-          window.location.pathname,
-        );
         const query_urls = query.getAll("url");
+        const route_default_urls =
+          query_urls.length > 0
+            ? []
+            : await source_urls_for_path(window.location.pathname, query);
         const source_urls =
           query_urls.length > 0 ? query_urls : route_default_urls;
 
@@ -472,26 +473,188 @@
         }
       }
 
-      function source_urls_for_path(pathname) {
-        const demo_source_urls = [
-          "http://localhost:8000/recordings/dohc_smoke.rrd?session=01",
-          "http://localhost:8000/recordings/dohc_smoke.rrd?session=02",
-          "http://localhost:8000/recordings/dohc_smoke.rrd?session=03",
-        ];
+      async function source_urls_for_path(pathname, query) {
+        const route = route_for_path(pathname);
+        if (route == null) {
+          return [];
+        }
+
+        const backend_base_url = dohc_backend_base_url(query);
+        const session_urls = await fetch_dohc_default_session_urls(
+          backend_base_url,
+          route,
+          query.get("session"),
+        );
+        if (session_urls.length > 0) {
+          return session_urls;
+        }
+
+        return dohc_fallback_source_urls(backend_base_url, route);
+      }
+
+      function route_for_path(pathname) {
         switch (pathname) {
           case "/demo":
-            return [
-              ...demo_source_urls,
-              "http://localhost:8000/blueprints/demo.rbl",
-            ];
+            return "demo";
           case "/dashboard":
-            return [
-              ...demo_source_urls,
-              "http://localhost:8000/blueprints/dashboard.rbl",
-            ];
+            return "dashboard";
           default:
-            return [];
+            return null;
         }
+      }
+
+      function dohc_backend_base_url(query) {
+        const configured = query.get("backend");
+        if (configured != null && configured !== "") {
+          const backend_base_url = configured.replace(/\/$/, "");
+          remember_dohc_backend_base_url(backend_base_url);
+          return backend_base_url;
+        }
+
+        const backend_port = query.get("backend_port") || "8000";
+        const hostname = window.location.hostname || "127.0.0.1";
+        const backend_base_url = `${window.location.protocol}//${hostname}:${backend_port}`;
+        remember_dohc_backend_base_url(backend_base_url);
+        return backend_base_url;
+      }
+
+      function remember_dohc_backend_base_url(backend_base_url) {
+        try {
+          window.sessionStorage.setItem(
+            "dohc_backend_base_url",
+            backend_base_url,
+          );
+        } catch (_error) {
+          // Session storage is optional; the viewer still falls back to URL-derived state.
+        }
+      }
+
+      async function fetch_dohc_default_session_urls(
+        backend_base_url,
+        route,
+        selected_session_id,
+      ) {
+        const api_urls = [
+          new URL("/sources", backend_base_url),
+          new URL("/api/playback/sessions", backend_base_url),
+        ];
+
+        for (const api_url of api_urls) {
+          api_url.searchParams.set("route", route);
+          const source_urls = await fetch_dohc_session_urls(
+            api_url,
+            backend_base_url,
+            route,
+            selected_session_id,
+          );
+          if (source_urls.length > 0) {
+            return source_urls;
+          }
+        }
+
+        return [];
+      }
+
+      async function fetch_dohc_session_urls(
+        api_url,
+        backend_base_url,
+        route,
+        selected_session_id,
+      ) {
+        try {
+          const response = await fetch(api_url);
+          if (!response.ok) {
+            console.warn(
+              `Failed to fetch DOHC sessions: ${response.status} ${response.statusText}`,
+            );
+            return [];
+          }
+
+          const payload = await response.json();
+          const sessions = Array.isArray(payload.sessions)
+            ? payload.sessions
+            : Array.isArray(payload.sources)
+              ? payload.sources
+            : [];
+          const target_session_id =
+            selected_session_id ||
+            payload.default_session_id ||
+            payload.default_source_id;
+          const session =
+            sessions.find((session) => session.id === target_session_id) ||
+            sessions[0];
+          if (session == null) {
+            return [];
+          }
+
+          return source_urls_from_session(
+            session,
+            backend_base_url,
+            route,
+            payload.blueprints,
+          );
+        } catch (error) {
+          console.warn(`Failed to fetch DOHC sessions: ${error}`);
+          return [];
+        }
+      }
+
+      function source_urls_from_session(
+        session,
+        backend_base_url,
+        route,
+        blueprints,
+      ) {
+        let source_urls = Array.isArray(session.source_urls)
+          ? session.source_urls
+          : [];
+        const blueprint_url =
+          session.blueprint_url ||
+          (blueprints != null ? blueprints[route] : null);
+        if (source_urls.length === 0) {
+          source_urls = [session.recording_url, blueprint_url].filter(
+            Boolean,
+          );
+        } else if (
+          blueprint_url != null &&
+          blueprint_url !== "" &&
+          !source_urls.includes(blueprint_url)
+        ) {
+          source_urls = [...source_urls, blueprint_url];
+        }
+
+        return source_urls.map((source_url) =>
+          with_session_hint(
+            new URL(source_url, backend_base_url),
+            session.id || "default",
+            route,
+          ),
+        );
+      }
+
+      function dohc_fallback_source_urls(backend_base_url, route) {
+        return [
+          with_session_hint(
+            new URL("/recordings/dohc_smoke.rrd", backend_base_url),
+            "demo-session-1",
+            route,
+          ),
+          with_session_hint(
+            new URL(`/blueprints/${route}.rbl`, backend_base_url),
+            "demo-session-1",
+            route,
+          ),
+        ];
+      }
+
+      function with_session_hint(url, session_id, route) {
+        if (!url.searchParams.has("session")) {
+          url.searchParams.set("session", session_id);
+        }
+        if (!url.searchParams.has("route")) {
+          url.searchParams.set("route", route);
+        }
+        return url.toString();
       }
 
       function on_app_started(handle) {
