@@ -585,9 +585,15 @@ impl DohcDemoSession {
             .filter_map(|source_url| resolve_dohc_source_url(source_url, backend_base_url).ok())
             .map(|mut url| {
                 {
+                    let has_session = url.query_pairs().any(|(key, _)| key == "session");
+                    let has_route = url.query_pairs().any(|(key, _)| key == "route");
                     let mut query = url.query_pairs_mut();
-                    query.append_pair("session", &self.id);
-                    query.append_pair("route", route);
+                    if !has_session {
+                        query.append_pair("session", &self.id);
+                    }
+                    if !has_route {
+                        query.append_pair("route", route);
+                    }
                 }
                 url.to_string()
             })
@@ -631,7 +637,7 @@ fn fetch_dohc_sessions(
 ) {
     ehttp::fetch(ehttp::Request::get(api_url.clone()), move |response| {
         let next_state = match response {
-            Ok(response) => parse_dohc_sessions_response(&response)
+            Ok(response) => parse_dohc_sessions_response(&response, &route)
                 .map(|sessions| DohcSessionsState::Loaded {
                     route: route.clone(),
                     api_url: api_url.clone(),
@@ -658,6 +664,7 @@ fn fetch_dohc_sessions(
 
 fn parse_dohc_sessions_response(
     response: &ehttp::Response,
+    route: &str,
 ) -> Result<Vec<DohcDemoSession>, String> {
     if !response.ok {
         return Err(format!("HTTP {} {}", response.status, response.status_text));
@@ -667,31 +674,47 @@ fn parse_dohc_sessions_response(
         .map_err(|err| format!("Invalid session JSON: {err}"))?;
     let sessions = payload
         .get("sessions")
+        .or_else(|| payload.get("sources"))
         .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "Session response is missing a sessions array".to_owned())?;
+        .ok_or_else(|| "Session response is missing a sessions or sources array".to_owned())?;
+    let route_blueprint_url = payload
+        .get("blueprints")
+        .and_then(|blueprints| blueprints.get(route))
+        .and_then(serde_json::Value::as_str);
 
     sessions
         .iter()
         .enumerate()
-        .map(|(index, session)| parse_dohc_session(index, session))
+        .map(|(index, session)| parse_dohc_session(index, session, route_blueprint_url))
         .collect()
 }
 
 fn parse_dohc_session(
     index: usize,
     session: &serde_json::Value,
+    route_blueprint_url: Option<&str>,
 ) -> Result<DohcDemoSession, String> {
     let id = json_string_field(session, "id").unwrap_or_else(|| format!("session-{index}"));
     let title = json_string_field(session, "title").unwrap_or_else(|| id.clone());
     let mut source_urls = json_string_array_field(session, "source_urls");
 
+    let recording_url = json_string_field(session, "recording_url");
+    let blueprint_url = json_string_field(session, "blueprint_url")
+        .or_else(|| route_blueprint_url.map(str::to_owned));
+
     if source_urls.is_empty() {
-        if let Some(recording_url) = json_string_field(session, "recording_url") {
+        if let Some(recording_url) = recording_url {
             source_urls.push(recording_url);
         }
-        if let Some(blueprint_url) = json_string_field(session, "blueprint_url") {
+        if let Some(blueprint_url) = blueprint_url {
             source_urls.push(blueprint_url);
         }
+    } else if let Some(blueprint_url) = blueprint_url
+        && !source_urls
+            .iter()
+            .any(|source_url| source_url == &blueprint_url)
+    {
+        source_urls.push(blueprint_url);
     }
 
     if source_urls.is_empty() {
@@ -734,8 +757,7 @@ fn resolve_dohc_source_url(source_url: &str, backend_base_url: &str) -> Result<U
 }
 
 fn dohc_sessions_api_url(backend_base_url: &str, route: &str) -> String {
-    match Url::parse(backend_base_url).and_then(|base_url| base_url.join("/api/playback/sessions"))
-    {
+    match Url::parse(backend_base_url).and_then(|base_url| base_url.join("/sources")) {
         Ok(mut url) => {
             url.query_pairs_mut().append_pair("route", route);
             url.to_string()
@@ -744,7 +766,7 @@ fn dohc_sessions_api_url(backend_base_url: &str, route: &str) -> String {
             re_log::error!(
                 "Failed to build DOHC sessions API URL from {backend_base_url:?}: {err}"
             );
-            format!("{backend_base_url}/api/playback/sessions?route={route}")
+            format!("{backend_base_url}/sources?route={route}")
         }
     }
 }
@@ -776,12 +798,23 @@ fn current_dohc_backend_base_url() -> String {
         if let Some(location) = &location {
             if let Ok(search) = location.search()
                 && let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search)
-                && let Some(backend) = params.get("backend")
             {
-                let backend = backend.trim_end_matches('/').to_owned();
-                if !backend.is_empty() {
+                if let Some(backend) = params.get("backend") {
+                    let backend = backend.trim_end_matches('/').to_owned();
+                    if !backend.is_empty() {
+                        return backend;
+                    }
+                }
+
+                if let Some(source_url) = params.get("url")
+                    && let Some(backend) = dohc_backend_base_url_from_source_url(&source_url)
+                {
                     return backend;
                 }
+            }
+
+            if let Some(backend) = dohc_backend_base_url_from_web_storage() {
+                return backend;
             }
 
             let protocol = location.protocol().unwrap_or_else(|_| "http:".to_owned());
@@ -803,6 +836,31 @@ fn current_dohc_backend_base_url() -> String {
     }
 
     "http://127.0.0.1:8000".to_owned()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dohc_backend_base_url_from_web_storage() -> Option<String> {
+    let storage = web_sys::window()
+        .and_then(|window| window.session_storage().ok())
+        .flatten()?;
+    let backend = storage.get_item("dohc_backend_base_url").ok().flatten()?;
+    let backend = backend.trim_end_matches('/').to_owned();
+    (!backend.is_empty()).then_some(backend)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dohc_backend_base_url_from_source_url(source_url: &str) -> Option<String> {
+    let url = Url::parse(source_url).ok()?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return None;
+    }
+
+    let host = url.host_str()?;
+    let port = url
+        .port()
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    Some(format!("{}://{host}{port}", url.scheme()))
 }
 
 fn welcome_item_ui(
