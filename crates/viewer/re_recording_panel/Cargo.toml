@@ -38,8 +38,13 @@ re_viewer_context.workspace = true
 
 ahash.workspace = true
 egui.workspace = true
+ehttp.workspace = true
 itertools.workspace = true
 serde = { workspace = true, optional = true }
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { workspace = true, features = ["Location", "UrlSearchParams", "Window"] }
 
 
 [dev-dependencies]
