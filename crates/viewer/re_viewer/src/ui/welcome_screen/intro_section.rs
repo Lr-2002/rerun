@@ -141,9 +141,9 @@ impl IntroItem {
 
                     ui.style_mut().text_styles.get_mut(&TextStyle::Body).expect("Should always have body text style").size = label_size;
                     ui.label(
-                        "Iterate faster on robotics learning with unified infrastructure. Interested? Read more "
+                        "The production backend for the Rerun data layer — turn your object stores into a queryable, streamable foundation. "
                     );
-                    link(ui, "here", "https://rerun.io/#rerun-data-platform");
+                    link(ui, "Learn more", "https://rerun.io/#rerun-data-platform");
                     ui.label(" or ");
                     link(ui, "book a demo", "https://calendly.com/d/ctht-4kp-qnt/rerun-demo-meeting");
                     ui.label(".");
