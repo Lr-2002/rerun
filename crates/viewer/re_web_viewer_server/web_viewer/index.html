@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- Rerun SDK-bundled web viewer. -->
+<!-- Delta SDK-bundled web viewer. -->
 <html>
   <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
 
@@ -19,7 +19,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@100;500&display=swap"
       rel="stylesheet"
     />
-    <title>Rerun Viewer</title>
+    <title>Delta Viewer</title>
     <style>
       html {
         /* Remove touch delay: */
@@ -49,12 +49,12 @@
         height: 100%;
       }
 
-      /* Match the Rerun header bar. */
+      /* Match the Delta header bar. */
       .header {
         width: 100%;
         height: 44px;
         /* background: #111415; */
-        /* Actual value from Rerun Viewer */
+        /* Actual value from Delta Viewer */
         background: #141414;
       }
 
@@ -77,7 +77,7 @@
         text-align: center;
       }
 
-      /* Rerun styling for normal text. */
+      /* Delta styling for normal text. */
       p {
         /*Gray-775*/
         color: #cad8de;
@@ -86,7 +86,7 @@
         font-weight: 500;
       }
 
-      /* Rerun styling for strong text. Matches `TextStyle::Heading`. */
+      /* Delta styling for strong text. Matches `TextStyle::Heading`. */
       .strong {
         /*Gray-775*/
         color: #ffffff;
@@ -94,7 +94,7 @@
         font-size: 16px;
       }
 
-      /* Rerun styling for subdued text.*/
+      /* Delta styling for subdued text.*/
       .subdued {
         /*Gray-550*/
         color: #7d8c92;
@@ -215,7 +215,7 @@
       function show_unsupported_browser() {
         show_center_html(`
           <p class="strong">
-              Your browser is too old to run the Rerun Viewer.
+              Your browser is too old to run the Delta Viewer.
           </p>
           <p>
               The Viewer requires WebAssembly SIMD support, available in:
@@ -237,7 +237,7 @@
       ) {
         show_center_html(`
           <p>
-              Rerun is not yet supported on mobile browsers.
+              Delta is not yet supported on mobile browsers.
           </p>
           <p>
               <a class="button" href="#" id="try_anyways">Try anyways</a>
@@ -368,6 +368,12 @@
         console.debug("Wasm loaded. Starting app…");
 
         const query = new URLSearchParams(window.location.search);
+        const route_default_urls = source_urls_for_path(
+          window.location.pathname,
+        );
+        const query_urls = query.getAll("url");
+        const source_urls =
+          query_urls.length > 0 ? query_urls : route_default_urls;
 
         /*
           url: Option<StringOrStringArray>,
@@ -383,11 +389,12 @@
           theme: Option<String>,
         */
         const options = {
-          url: query.getAll("url"),
+          url: source_urls,
           manifest_url: query.get("manifest_url"),
           render_backend: query.get("renderer"),
           video_decoder: query.get("video_decoder"),
-          hide_welcome_screen: query.has("hide_welcome_screen"),
+          hide_welcome_screen:
+            query.has("hide_welcome_screen") || route_default_urls.length > 0,
           // panel_state_overrides: undefined,
           // fullscreen: undefined,
           enable_history: true,
@@ -405,13 +412,13 @@
 
         function check_for_panic() {
           if (handle.has_panicked()) {
-            console.error("Rerun has crashed");
+            console.error("Delta has crashed");
 
             document.getElementById("the_canvas_id").remove();
 
             show_center_html(`
               <p class="strong">
-                  Rerun has crashed.
+                  Delta has crashed.
               </p>
               <pre align="left">${handle.panic_message()}</pre>
               <p>
@@ -462,6 +469,28 @@
           default:
             console.warn(`unexpected value for "${key}" query. Expected one of: 0, 1, false, true, or no value. Defaulting to "${fallback}".`);
             return fallback;
+        }
+      }
+
+      function source_urls_for_path(pathname) {
+        const demo_source_urls = [
+          "http://localhost:8000/recordings/dohc_smoke.rrd?session=01",
+          "http://localhost:8000/recordings/dohc_smoke.rrd?session=02",
+          "http://localhost:8000/recordings/dohc_smoke.rrd?session=03",
+        ];
+        switch (pathname) {
+          case "/demo":
+            return [
+              ...demo_source_urls,
+              "http://localhost:8000/blueprints/demo.rbl",
+            ];
+          case "/dashboard":
+            return [
+              ...demo_source_urls,
+              "http://localhost:8000/blueprints/dashboard.rbl",
+            ];
+          default:
+            return [];
         }
       }
 

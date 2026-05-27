@@ -1,6 +1,6 @@
 {
-  "name": "Rerun Viewer",
-  "short_name": "rerun-viewer-pwa",
+  "name": "Delta Viewer",
+  "short_name": "delta-viewer",
   "icons": [
     {
       "src": "./icon-256.png",

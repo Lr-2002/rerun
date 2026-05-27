@@ -43,17 +43,17 @@ impl IntroItem {
             Self::DocItem {
                 title: "Send data in",
                 url: "https://rerun.io/docs/getting-started/data-in",
-                body: "Ingest multi-rate, multimodal data from robot logs, sensors, simulation, or video.",
+                body: "Send DOHC data into Delta from running applications or existing files.",
             },
             Self::DocItem {
                 title: "Explore data",
                 url: "https://rerun.io/docs/getting-started/configure-the-viewer",
-                body: "Visualize and explore multi-rate, multimodal data across every stage of the pipeline.",
+                body: "Use Delta's Rerun-powered controls to inspect recordings and layouts.",
             },
             Self::DocItem {
                 title: "Query data out",
                 url: "https://rerun.io/docs/getting-started/data-out",
-                body: "Query raw, intermediate, and derived data with dataframes or SQL, and stream to training.",
+                body: "Run analysis against recordings and send results back to the dataset.",
             },
         ];
         if login_enabled {
