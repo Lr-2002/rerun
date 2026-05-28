@@ -1,47 +1,56 @@
-mod example_section;
-mod intro_section;
 mod loading_data_ui;
 mod no_data_ui;
 mod welcome_section;
 
 use std::sync::Arc;
 
-use example_section::{ExampleSection, MIN_COLUMN_WIDTH};
 use re_log_channel::LogSource;
+use re_uri::Origin;
 
 use crate::app_state::WelcomeScreenState;
 
-pub use intro_section::{CloudState, LoginState};
 use re_viewer_context::AppContext;
 
-#[derive(Default)]
-pub struct WelcomeScreen {
-    example_page: ExampleSection,
+const MIN_WELCOME_WIDTH: f32 = 250.0;
+
+#[allow(dead_code)]
+pub enum LoginState {
+    NoAuth,
+    Auth { email: Option<String> },
 }
 
+#[allow(dead_code)]
+pub struct CloudState {
+    pub has_server: Option<Origin>,
+    pub login: LoginState,
+}
+
+#[derive(Default)]
+pub struct WelcomeScreen;
+
 impl WelcomeScreen {
-    pub fn set_examples_manifest_url(&mut self, egui_ctx: &egui::Context, url: String) {
-        self.example_page.set_manifest_url(egui_ctx, url);
+    pub fn set_examples_manifest_url(&mut self, _egui_ctx: &egui::Context, _url: String) {
+        // DOHC replaces the upstream examples surface with fixed Demo/Analyze entry points.
     }
 
     /// Welcome screen shown in place of the viewport when no data is loaded.
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppContext<'_>,
+        _ctx: &AppContext<'_>,
         welcome_screen_state: &WelcomeScreenState,
         log_sources: &[Arc<LogSource>],
-        login_state: &CloudState,
+        _login_state: &CloudState,
     ) {
         if welcome_screen_state.opacity <= 0.0 {
             return;
         }
 
-        // This is needed otherwise `example_page_ui` bleeds by a few pixels over the timeline panel
+        // This is needed otherwise the welcome page bleeds by a few pixels over the timeline panel.
         // TODO(ab): figure out why that happens
         ui.set_clip_rect(ui.available_rect_before_wrap());
 
-        let horizontal_scroll = ui.available_width() < 40.0 * 2.0 + MIN_COLUMN_WIDTH;
+        let horizontal_scroll = ui.available_width() < 40.0 * 2.0 + MIN_WELCOME_WIDTH;
 
         let response = egui::ScrollArea::new([horizontal_scroll, true])
             .id_salt("welcome_screen_page")
@@ -57,16 +66,12 @@ impl WelcomeScreen {
                     ..Default::default()
                 }
                 .show(ui, |ui| {
-                    if welcome_screen_state.hide_examples {
-                        if let Some(loading_text) =
-                            loading_data_ui::loading_text_for_data_sources(log_sources)
-                        {
-                            loading_data_ui::loading_data_ui(ui, &loading_text);
-                        } else {
-                            no_data_ui::no_data_ui(ui);
-                        }
+                    if let Some(loading_text) =
+                        loading_data_ui::loading_text_for_data_sources(log_sources)
+                    {
+                        loading_data_ui::loading_data_ui(ui, &loading_text);
                     } else {
-                        self.example_page.ui(ui, ctx, login_state);
+                        no_data_ui::no_data_ui(ui);
                     }
                 });
             });

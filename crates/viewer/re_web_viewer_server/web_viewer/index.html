@@ -368,11 +368,12 @@
         console.debug("Wasm loaded. Starting app…");
 
         const query = new URLSearchParams(window.location.search);
+        const active_route = route_for_path(window.location.pathname);
         const query_urls = query.getAll("url");
         const route_default_urls =
-          query_urls.length > 0
+          query_urls.length > 0 || active_route == null
             ? []
-            : await source_urls_for_path(window.location.pathname, query);
+            : await source_urls_for_route(active_route, query);
         const source_urls =
           query_urls.length > 0 ? query_urls : route_default_urls;
 
@@ -398,7 +399,7 @@
             query.has("hide_welcome_screen") || route_default_urls.length > 0,
           // panel_state_overrides: undefined,
           // fullscreen: undefined,
-          enable_history: true,
+          enable_history: active_route == null,
           notebook: get_query_bool(query, "notebook", false),
           persist: get_query_bool(query, "persist", true),
           fallback_token: query.get("token"),
@@ -473,12 +474,7 @@
         }
       }
 
-      async function source_urls_for_path(pathname, query) {
-        const route = route_for_path(pathname);
-        if (route == null) {
-          return [];
-        }
-
+      async function source_urls_for_route(route, query) {
         const backend_base_url = dohc_backend_base_url(query);
         const session_urls = await fetch_dohc_default_session_urls(
           backend_base_url,
@@ -496,8 +492,10 @@
         switch (pathname) {
           case "/demo":
             return "demo";
+          case "/analyze":
+            return "analyze";
           case "/dashboard":
-            return "dashboard";
+            return "demo";
           default:
             return null;
         }

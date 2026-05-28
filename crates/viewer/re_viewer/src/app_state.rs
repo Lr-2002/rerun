@@ -577,81 +577,86 @@ impl AppState {
                 // Left panel (recordings and blueprint)
                 //
 
-                let left_panel = egui::Panel::left("blueprint_panel")
-                    .resizable(true)
-                    .frame(egui::Frame {
-                        fill: ui.visuals().panel_fill,
-                        ..Default::default()
-                    })
-                    .min_size(120.0)
-                    .default_size(default_blueprint_panel_width(ui.content_rect().width()));
+                let left_panel_response = if hide_left_panel_for_compact_welcome(ui, route) {
+                    None
+                } else {
+                    let left_panel = egui::Panel::left("blueprint_panel")
+                        .resizable(true)
+                        .frame(egui::Frame {
+                            fill: ui.visuals().panel_fill,
+                            ..Default::default()
+                        })
+                        .min_size(120.0)
+                        .default_size(default_blueprint_panel_width(ui.content_rect().width()));
 
-                let left_panel_response = left_panel.show_animated_inside(
-                    ui,
-                    app_blueprint.blueprint_panel_state().is_expanded(),
-                    |ui: &mut egui::Ui| {
-                        // ListItem don't need vertical spacing so we disable it, but restore it
-                        // before drawing the blueprint panel.
-                        ui.spacing_mut().item_spacing.y = 0.0;
+                    left_panel.show_animated_inside(
+                        ui,
+                        app_blueprint.blueprint_panel_state().is_expanded(),
+                        |ui: &mut egui::Ui| {
+                            // ListItem don't need vertical spacing so we disable it, but restore it
+                            // before drawing the blueprint panel.
+                            ui.spacing_mut().item_spacing.y = 0.0;
 
-                        match route {
-                            Route::LocalRecording { .. }
-                            | Route::LocalTable(..)
-                            | Route::RedapEntry { .. }
-                            | Route::RedapServer(..)
-                            | Route::Loading(..) => {
-                                let show_blueprints = matches!(route, Route::LocalRecording { .. });
-                                let resizable = show_blueprints;
-                                if resizable {
-                                    // Ensure Blueprint panel has at least 150px minimum height, because now it doesn't autogrow (as it does without resizing=active)
-                                    let blueprint_min_height = 150.0;
-                                    let recordings_min_height = 104.0; // Minimum for recordings panel = top panel + 1 opened recording + extra space before bluprint
-                                    let available_height = ui.available_height();
+                            match route {
+                                Route::LocalRecording { .. }
+                                | Route::LocalTable(..)
+                                | Route::RedapEntry { .. }
+                                | Route::RedapServer(..)
+                                | Route::Loading(..) => {
+                                    let show_blueprints =
+                                        matches!(route, Route::LocalRecording { .. });
+                                    let resizable = show_blueprints;
+                                    if resizable {
+                                        // Ensure Blueprint panel has at least 150px minimum height, because now it doesn't autogrow (as it does without resizing=active)
+                                        let blueprint_min_height = 150.0;
+                                        let recordings_min_height = 104.0; // Minimum for recordings panel = top panel + 1 opened recording + extra space before bluprint
+                                        let available_height = ui.available_height();
 
-                                    // Calculate the maximum height for recordings panel
-                                    // Allow full space usage minus the blueprint minimum height, so that the blueprint panel can grow below existing content
-                                    let max_recordings_height = (available_height
-                                        - blueprint_min_height)
-                                        .max(recordings_min_height);
+                                        // Calculate the maximum height for recordings panel
+                                        // Allow full space usage minus the blueprint minimum height, so that the blueprint panel can grow below existing content
+                                        let max_recordings_height = (available_height
+                                            - blueprint_min_height)
+                                            .max(recordings_min_height);
 
-                                    egui::Panel::top("recording_panel")
-                                        .frame(egui::Frame::new())
-                                        .resizable(resizable)
-                                        .show_separator_line(false)
-                                        .min_size(recordings_min_height)
-                                        .max_size(max_recordings_height)
-                                        .default_size(160.0_f32.max(recordings_min_height))
-                                        .show_inside(ui, |ui| {
-                                            self.recording_panel.show_panel(
-                                                &ctx,
-                                                ui,
-                                                redap_servers,
-                                                welcome_screen_state.hide_examples,
-                                            );
-                                        });
-                                } else {
-                                    self.recording_panel.show_panel(
-                                        &ctx,
-                                        ui,
-                                        redap_servers,
-                                        welcome_screen_state.hide_examples,
-                                    );
+                                        egui::Panel::top("recording_panel")
+                                            .frame(egui::Frame::new())
+                                            .resizable(resizable)
+                                            .show_separator_line(false)
+                                            .min_size(recordings_min_height)
+                                            .max_size(max_recordings_height)
+                                            .default_size(160.0_f32.max(recordings_min_height))
+                                            .show_inside(ui, |ui| {
+                                                self.recording_panel.show_panel(
+                                                    &ctx,
+                                                    ui,
+                                                    redap_servers,
+                                                    welcome_screen_state.hide_examples,
+                                                );
+                                            });
+                                    } else {
+                                        self.recording_panel.show_panel(
+                                            &ctx,
+                                            ui,
+                                            redap_servers,
+                                            welcome_screen_state.hide_examples,
+                                        );
+                                    }
+
+                                    if show_blueprints {
+                                        blueprint_tree.show(
+                                            &ctx,
+                                            &viewport_ui.blueprint,
+                                            ui,
+                                            view_states,
+                                        );
+                                    }
                                 }
 
-                                if show_blueprints {
-                                    blueprint_tree.show(
-                                        &ctx,
-                                        &viewport_ui.blueprint,
-                                        ui,
-                                        view_states,
-                                    );
-                                }
+                                Route::ChunkStoreBrowser { .. } | Route::Settings { .. } => {} // handled above
                             }
-
-                            Route::ChunkStoreBrowser { .. } | Route::Settings { .. } => {} // handled above
-                        }
-                    },
-                );
+                        },
+                    )
+                };
                 if let Some(left_panel_response) = left_panel_response {
                     left_panel_response.response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Panel, true, "blueprint_panel")
@@ -1068,6 +1073,11 @@ fn check_for_clicked_hyperlinks(egui_ctx: &egui::Context, command_sender: &Comma
 
 pub fn default_blueprint_panel_width(screen_width: f32) -> f32 {
     (0.35 * screen_width).min(200.0).round()
+}
+
+fn hide_left_panel_for_compact_welcome(ui: &egui::Ui, route: &Route) -> bool {
+    ui.content_rect().width() < 640.0
+        && matches!(route, Route::RedapServer(origin) if origin == &*re_redap_browser::EXAMPLES_ORIGIN)
 }
 
 impl re_byte_size::MemUsageTreeCapture for AppState {

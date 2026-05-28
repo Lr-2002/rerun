@@ -778,10 +778,9 @@ fn current_dohc_route() -> String {
             .and_then(|window| window.location().pathname().ok())
             .unwrap_or_default();
 
-        if pathname == "/dashboard" {
-            "dashboard".to_owned()
-        } else {
-            "demo".to_owned()
+        match pathname.as_str() {
+            "/analyze" => "analyze".to_owned(),
+            _ => "demo".to_owned(),
         }
     }
 
@@ -875,7 +874,7 @@ fn welcome_item_ui(
         Route::RedapServer(origin) if origin == &*EXAMPLES_ORIGIN
     );
 
-    let title = list_item::LabelContent::header("Welcome to Delta").with_icon(&icons::HOME);
+    let title = list_item::LabelContent::header("欢迎使用 Delta").with_icon(&icons::HOME);
 
     let list_item = ui.list_item().header().selected(selected).active(active);
 
